@@ -207,7 +207,7 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
 
         # LM Outputs
         new_carry = HierarchicalReasoningModel_ACTV1InnerCarry(z_H=z_H.detach(), z_L=z_L.detach())  # New carry no grad
-        output = self.lm_head(z_H)[:, self.puzzle_emb_len:]
+        output = self.lm_head(z_H)
 
         # Q head
         q_logits = self.q_head(z_H[:, 0]).to(torch.float32)
