@@ -75,20 +75,52 @@ class HotpotQADataset(Dataset):
         )
 
     # ===== helpers =====
-    def _passages_from_supporting(self, ex: Dict[str, Any]) -> List[str]:
-        # ex["context"] = [[title, [sent0, sent1, ...]], ...]
-        # ex["supporting_facts"] = [[title, sent_id], ...]
-        title2sents = {title: sents for title, sents in ex["context"]}
-        by_title: Dict[str, List[int]] = {}
-        for t, sid in ex["supporting_facts"]:
-            by_title.setdefault(t, []).append(sid)
+    def _passages_from_supporting(self, ex):
+        """
+        Hỗ trợ cả 2 schema của HotpotQA:
+        - context = [[title, [sentences...]], ...]
+        - context = [{"title": ..., "sentences": [...]}, ...]
+        """
+        title2sents = {}
 
-        passages: List[str] = []
+        for entry in ex["context"]:
+            if isinstance(entry, dict):
+                title = entry.get("title")
+                sents = entry.get("sentences") or entry.get("text") or []
+            elif isinstance(entry, (list, tuple)):
+                # Chấp nhận list dài >2, chỉ lấy 2 phần đầu
+                title = entry[0] if len(entry) >= 1 else None
+                sents = entry[1] if len(entry) >= 2 else []
+            else:
+                title, sents = None, []
+
+            if isinstance(title, str) and isinstance(sents, (list, tuple)):
+                # Mỗi phần tử của sents phải là string
+                sents = [s for s in sents if isinstance(s, str)]
+                title2sents[title] = sents
+
+        # supporting_facts có thể là [["Title", sent_id], ...] hoặc dicts
+        by_title = {}
+        for sf in ex.get("supporting_facts", []):
+            if isinstance(sf, dict):
+                t = sf.get("title")
+                sid = sf.get("sent_id")
+            elif isinstance(sf, (list, tuple)) and len(sf) >= 2:
+                t, sid = sf[0], sf[1]
+            else:
+                t, sid = None, None
+            if isinstance(t, str) and isinstance(sid, int):
+                by_title.setdefault(t, []).append(sid)
+
+        passages = []
         for t, sids in by_title.items():
-            sids = sorted(sids)
-            # gộp các câu hỗ trợ cùng title lại thành 1 đoạn
             sents = title2sents.get(t, [])
-            txt = " ".join(sents[sid] for sid in sids if 0 <= sid < len(sents))
+            if not sents:
+                continue
+            sids = sorted([sid for sid in sids if 0 <= sid < len(sents)])
+            if not sids:
+                continue
+            txt = " ".join(sents[sid] for sid in sids)
             if txt.strip():
                 passages.append(txt)
 
