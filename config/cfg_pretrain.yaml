@@ -1,0 +1,36 @@
+seed: 0
+global_batch_size: 8
+epochs: 1
+lr: 2.5e-4
+lr_min_ratio: 0.1
+lr_warmup_steps: 200
+weight_decay: 0.01
+beta1: 0.9
+beta2: 0.95
+
+# QA lengths + tokenizer
+seq_len_q: 64
+ctx_k: 4
+ctx_len: 128
+tokenizer_name: "bert-base-uncased"
+
+data_path: ""   # giữ chỗ
+
+arch:
+  name: "hrm_act_v1@HierarchicalReasoningModel_ACTV1"
+  loss:
+    name: "losses@ACTLossHead"
+    loss_type: "softmax_cross_entropy"
+
+  # các tham số nội tại của HRM
+  hidden_size: 768
+  expansion: 4.0
+  num_heads: 12
+  pos_encodings: "rope"
+  H_cycles: 2
+  L_cycles: 3
+  H_layers: 2
+  L_layers: 2
+  halt_max_steps: 3
+  halt_exploration_prob: 0.1
+  forward_dtype: "bfloat16"
