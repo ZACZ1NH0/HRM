@@ -243,7 +243,7 @@ def train_batch(config: PretrainConfig, train_state: TrainState, batch: Any, glo
             return reduced_metrics
 
 
-def evaluate(config: PretrainConfig, train_state: TrainState, eval_loader: torch.utils.data.DataLoader, eval_metadata: PuzzleDatasetMetadata, rank: int, world_size: int):
+def evaluate(config: PretrainConfig, train_state: TrainState, eval_loader: torch.utils.data.DataLoader, eval_metadata: HotpotQADatasetMetadata, rank: int, world_size: int):
     with torch.inference_mode():
         set_ids = {k: idx for idx, k in enumerate(eval_metadata.sets)}
         
