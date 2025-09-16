@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple
 import random
+import math
 
 import torch
 from torch.utils.data import Dataset
@@ -60,6 +61,7 @@ class HotpotQADataset(Dataset):
 
         # load dataset (chọn "distractor" để nhanh; "fullwiki" cũng được nếu bạn đã login)
         self.ds = load_dataset("hotpot_qa", "distractor")[split]
+        self.num_groups = math.ceil(len(self.ds) / cfg.global_batch_size)
 
         random.seed(cfg.seed)
 
@@ -137,41 +139,63 @@ class HotpotQADataset(Dataset):
 
     # ===== Dataset API =====
     def __len__(self):
-        return len(self.ds)
+        return self.num_groups
 
-    def __getitem__(self, idx: int):
-        ex = self.ds[idx]
-        q = ex["question"]
-        a = ex["answer"]
+    def __getitem__(self, group_idx: int):
+        B = self.cfg.global_batch_size
+        start = group_idx * B
+        end   = min((group_idx + 1) * B, len(self.ds))
+        idxs = list(range(start, end))
 
-        # question ids (Lq)
-        q_ids = self._tokenize_fixed(q, self.cfg.seq_len_q)
+        inputs_list = []
+        ctx_list    = []
+        labels_list = []
 
-        # passages (K x Lc)
-        if self.cfg.use_supporting_facts:
-            passages = self._passages_from_supporting(ex)
-        else:
-            passages = []  # TODO: có thể thay bằng BM25 top-k
+        for idx in idxs:
+            ex = self.ds[idx]
+            q = ex["question"]
+            a = ex["answer"]
 
-        # pad để đủ K
-        while len(passages) < self.cfg.ctx_k:
-            passages.append("")
+            # question ids (Lq)
+            q_ids = self._tokenize_fixed(q, self.cfg.seq_len_q)
 
-        ctx_ids = [self._tokenize_fixed(p, self.cfg.ctx_len) for p in passages[: self.cfg.ctx_k]]
+            # passages (K x Lc)
+            if self.cfg.use_supporting_facts:
+                passages = self._passages_from_supporting(ex)
+            else:
+                passages = []
+            if not passages:
+                passages = []
+            while len(passages) < self.cfg.ctx_k:
+                passages.append("")
+            ctx_ids = [self._tokenize_fixed(p, self.cfg.ctx_len) for p in passages[: self.cfg.ctx_k]]
 
-        # labels (generative): đặt answer vào N token cuối của toàn chuỗi
-        total_len = self.cfg.ctx_k * self.cfg.ctx_len + self.cfg.seq_len_q
-        labels = [-100] * total_len
-        a_ids = self.tok(a, add_special_tokens=False)["input_ids"]
-        a_ids = a_ids[: min(len(a_ids), total_len)]
-        start = total_len - len(a_ids)
-        labels[start: start + len(a_ids)] = a_ids
+            # labels (generative): answer vào cuối chuỗi [CTX... + Q]
+            total_len = self.cfg.ctx_k * self.cfg.ctx_len + self.cfg.seq_len_q
+            labels = [-100] * total_len
+            a_ids = self.tok(a, add_special_tokens=False)["input_ids"]
+            a_ids = a_ids[: min(len(a_ids), total_len)]
+            start_pos = total_len - len(a_ids)
+            labels[start_pos: start_pos + len(a_ids)] = a_ids
+
+            inputs_list.append(torch.tensor(q_ids, dtype=torch.long))        # (Lq,)
+            ctx_list.append(torch.tensor(ctx_ids, dtype=torch.long))         # (K, Lc)
+            labels_list.append(torch.tensor(labels, dtype=torch.long))       # (total_len,)
+
+        # Nếu nhóm cuối nhỏ hơn B: pad thêm mẫu rỗng để giữ shape ổn định (tuỳ bạn)
+        if len(inputs_list) < B:
+            pad_q   = torch.full((self.cfg.seq_len_q,), self.tok.pad_token_id, dtype=torch.long)
+            pad_ctx = torch.full((self.cfg.ctx_k, self.cfg.ctx_len), self.tok.pad_token_id, dtype=torch.long)
+            pad_lab = torch.full((self.cfg.ctx_k * self.cfg.ctx_len + self.cfg.seq_len_q,), -100, dtype=torch.long)
+            while len(inputs_list) < B:
+                inputs_list.append(pad_q)
+                ctx_list.append(pad_ctx)
+                labels_list.append(pad_lab)
 
         batch = {
-            "inputs": torch.tensor(q_ids, dtype=torch.long),                # (Lq,)
-            "ctx_inputs": torch.tensor(ctx_ids, dtype=torch.long),         # (K, Lc)
-            "labels": torch.tensor(labels, dtype=torch.long)               # (total_len,)
+            "inputs":     torch.stack(inputs_list, dim=0),   # (B, Lq)
+            "ctx_inputs": torch.stack(ctx_list,  dim=0),     # (B, K, Lc)
+            "labels":     torch.stack(labels_list, dim=0),   # (B, total_len)
         }
-
-        # Trả triple đúng interface của pretrain.py
+        
         return self.split, batch, self.cfg.global_batch_size
