@@ -30,7 +30,7 @@ class HierarchicalReasoningModel_ACTV1Carry:
 
 class HierarchicalReasoningModel_ACTV1Config(BaseModel):
     batch_size: int
-    seq_len: int
+    seq_len_q: int
     ctx_k: int
     ctx_len: int
     vocab_size: int
