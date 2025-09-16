@@ -21,6 +21,9 @@ from adam_atan2 import AdamATan2
 from hotpot_dataset import HotpotQADataset, HotpotQADatasetConfig, HotpotQADatasetMetadata
 from utils.functions import load_model_class, get_model_source_path
 
+os.environ.setdefault("TORCHINDUCTOR_DISABLE", "1")
+os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+
 
 
 class LossConfig(pydantic.BaseModel):
@@ -120,9 +123,10 @@ def create_model(config: PretrainConfig, train_metadata: HotpotQADatasetMetadata
     with torch.device("cuda"):
         model: nn.Module = model_cls(model_cfg)
         model = loss_head_cls(model, **config.arch.loss.__pydantic_extra__)  # type: ignore
-        if "DISABLE_COMPILE" not in os.environ:
-            model = torch.compile(model, dynamic=False)  # type: ignore
-
+        # if "DISABLE_COMPILE" not in os.environ:
+        #     model = torch.compile(model, dynamic=False)  # type: ignore
+        if os.environ.get("DISABLE_COMPILE", "1") != "1":  # mặc định TẮT compile
+            model = torch.compile(model, dynamic=False)
         if world_size > 1:
             with torch.no_grad():
                 for param in list(model.parameters()) + list(model.buffers()):

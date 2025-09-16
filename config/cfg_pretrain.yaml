@@ -33,4 +33,4 @@ arch:
   L_layers: 2
   halt_max_steps: 3
   halt_exploration_prob: 0.1
-  forward_dtype: "bfloat16"
+  forward_dtype: "float32"
