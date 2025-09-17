@@ -98,7 +98,7 @@ def create_dataloader(config: PretrainConfig, split: str, rank: int, world_size:
         dataset,
         batch_size=None,
         shuffle = False,     # giữ nguyên: dataset trả triple
-        num_workers=0,
+        num_workers=2,
         pin_memory=False,
         persistent_workers=False,
         prefetch_factor=2,
