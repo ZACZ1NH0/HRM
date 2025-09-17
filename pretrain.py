@@ -24,7 +24,7 @@ from utils.functions import load_model_class, get_model_source_path
 os.environ.setdefault("TORCHINDUCTOR_DISABLE", "1")
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
-max_steps_per_epoch = getattr(config, "max_steps_per_epoch", None)
+
 
 
 class LossConfig(pydantic.BaseModel):
@@ -380,7 +380,7 @@ def launch(hydra_config: DictConfig):
         
     # Load sync'ed config
     config = load_synced_config(hydra_config, rank=RANK, world_size=WORLD_SIZE)
-
+    max_steps_per_epoch = getattr(config, "max_steps_per_epoch", None)
     # Seed RNGs to ensure consistency
     torch.random.manual_seed(config.seed + RANK)
 
