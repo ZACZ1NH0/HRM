@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import Dataset
 from datasets import load_dataset
 from transformers import AutoTokenizer
+from retriever import BM25Retriever as retriever
 
 
 @dataclass
@@ -17,7 +18,7 @@ class HotpotQADatasetConfig:
     seq_len_q: int = 64       # Lq
     ctx_k: int = 4            # K passages
     ctx_len: int = 128        # Lc
-
+    retriever= Optional[object] = None
     # misc
     seed: int = 0
     use_supporting_facts: bool = True  # True = dùng supporting_facts để lấy passages
@@ -52,6 +53,7 @@ class HotpotQADataset(Dataset):
         assert split in ("train", "validation")
         self.split = split
         self.cfg = cfg
+        self.retriever = cfg.retriever
 
         # tokenizer
         self.tok = AutoTokenizer.from_pretrained(cfg.tokenizer_name, use_fast=True)
@@ -61,6 +63,11 @@ class HotpotQADataset(Dataset):
 
         # load dataset (chọn "distractor" để nhanh; "fullwiki" cũng được nếu bạn đã login)
         self.ds = load_dataset("hotpot_qa", "distractor")[split]
+        retr = retriever()
+        cache_path = "artifacts/bm25_fullwiki.pkl"
+        docs = self.ds
+        retr.build(docs)
+        retr.save(cache_path)
         self.num_groups = math.ceil(len(self.ds) / cfg.global_batch_size)
 
         random.seed(cfg.seed)
@@ -76,6 +83,65 @@ class HotpotQADataset(Dataset):
             ctx_len=cfg.ctx_len
         )
 
+    def _retrieve_passages(self, question_text: str, ex: Dict) -> List[str]:
+        """
+        Strategy:
+          - nếu use_supporting_facts=True: lấy từ supporting_facts (warm-up, đảm bảo vàng có mặt)
+          - nếu tắt: yêu cầu retriever instance (BM25, dense) để lấy top-K
+        """
+        # ưu tiên supporting_facts khi bật để model học dễ hơn
+        if self.cfg.use_supporting_facts:
+            passages = self._passages_from_supporting(ex)
+            if passages:
+                return passages[: self.cfg.ctx_k]
+
+        # nếu không có hoặc tắt, dùng retriever
+        if self.retriever is None:
+            # fallback: lấy ngẫu nhiên từ context distractor (đỡ crash)
+            ctx_paras = self._all_paragraphs_from_context(ex)
+            random.shuffle(ctx_paras)
+            return ctx_paras[: self.cfg.ctx_k]
+
+        # dùng retriever (đã build/load ở pretrain.py)
+        top = self.retriever.search(question_text, k=self.cfg.ctx_k)  # [(idx, score)]
+        idxs = [i for i, _ in top]
+        return self.retriever.get_passages(idxs)
+    
+    def _encode_ctx(self, passages: List[str]) -> List[List[int]]:
+        ctx_ids = []
+        for p in passages[:self.ctx_k]:
+            ids = self.tok(
+                p, truncation=True, padding="max_length",
+                max_length=self.ctx_len, add_special_tokens=False
+            )["input_ids"]
+            ctx_ids.append(ids)
+        # pad K
+        while len(ctx_ids) < self.ctx_k:
+            ctx_ids.append([self.tok.pad_token_id] * self.ctx_len)
+        return ctx_ids
+
+    def __iter__(self):
+        for ex in self.stream:  # cách bạn đang đọc examples
+            q_text = ex["question"]
+            passages = self._retrieve_passages(q_text)
+            ctx_ids = self._encode_ctx(passages)   # (K, Lc)
+            q_ids = self.tok(
+                q_text, truncation=True, padding="max_length",
+                max_length=self.cfg.seq_len_q, add_special_tokens=False
+            )["input_ids"]
+
+            # build labels (đặt -100 cho CTX + Q; answer tokens ở đuôi)
+            ans_ids = self.tok(
+                ex["answer"], truncation=True, padding="max_length",
+                max_length=self.cfg.answer_max_len, add_special_tokens=False
+            )["input_ids"]
+
+            yield {
+                "inputs": torch.tensor(q_ids, dtype=torch.long),             # (Lq)
+                "puzzle_identifiers": torch.tensor(ctx_ids, dtype=torch.long),# (K, Lc)
+                "labels": build_labels(q_ids, ctx_ids, ans_ids, self.tok.pad_token_id),
+                # … các field khác bạn đang dùng
+            }
     # ===== helpers =====
     def _passages_from_supporting(self, ex):
         """

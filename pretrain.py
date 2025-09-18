@@ -9,7 +9,7 @@ import torch
 import torch.distributed as dist
 from torch import nn
 from torch.utils.data import DataLoader
-
+from retriever import BM25Retriever
 import tqdm
 import wandb
 import coolname
@@ -85,6 +85,14 @@ class TrainState:
 
 def create_dataloader(config: PretrainConfig, split: str, rank: int, world_size: int, **kwargs):
     # kwargs có thể bỏ qua; rank/world_size giữ cho đủ chữ ký
+    retr = BM25Retriever()
+    cache_path = "artifacts/bm25_fullwiki.pkl"
+    if os.path.exists(cache_path):
+        retr.load(cache_path, show_stats=True)
+    else:
+        raise FileNotFoundError(
+            f"BM25 cache not found at {cache_path}. Build fullwiki index first and save it."
+        )
     ds_cfg = HotpotQADatasetConfig(
         tokenizer_name=config.tokenizer_name,    # thêm field này vào PretrainConfig bên dưới
         seq_len_q=config.seq_len_q,
@@ -93,7 +101,9 @@ def create_dataloader(config: PretrainConfig, split: str, rank: int, world_size:
         seed=config.seed,
         use_supporting_facts=True,
         global_batch_size=config.global_batch_size,
+        retriever=retr,
     )
+    
     dataset = HotpotQADataset("train" if split=="train" else "validation", ds_cfg)
     dataloader = DataLoader(
         dataset,
@@ -380,7 +390,7 @@ def launch(hydra_config: DictConfig):
         
     # Load sync'ed config
     config = load_synced_config(hydra_config, rank=RANK, world_size=WORLD_SIZE)
-    max_steps_per_epoch = getattr(config, "max_steps_per_epoch", None)
+    # max_steps_per_epoch = getattr(config, "max_steps_per_epoch", None)
     # Seed RNGs to ensure consistency
     torch.random.manual_seed(config.seed + RANK)
 
@@ -407,72 +417,72 @@ def launch(hydra_config: DictConfig):
 
 
     #Training Loop
-    for _iter_id in range(total_iters):
-        for local_epoch in range(train_epochs_per_iter):
-            epoch_idx = _iter_id * train_epochs_per_iter + local_epoch
-            print(f"[Rank {RANK}, World Size {WORLD_SIZE}]: Epoch {epoch_idx}")
-
-            ############ Train Iter (1 epoch)
-            train_state.model.train()
-            # đếm step trong epoch
-            steps_in_epoch = 0
-            for set_name, batch, global_batch_size in train_loader:
-                metrics = train_batch(config, train_state, batch, global_batch_size, rank=RANK, world_size=WORLD_SIZE)
-
-                steps_in_epoch += 1
-                if RANK == 0 and metrics is not None:
-                    wandb.log(metrics, step=train_state.step)
-                    progress_bar.update(train_state.step - progress_bar.n)  # type: ignore
-                    if steps_in_epoch % 200 == 0:
-                        print(f"[Epoch {epoch_idx}] step {steps_in_epoch}")
-
-                # GIỚI HẠN SỐ BƯỚC MỖI EPOCH (tùy chọn)
-                if (max_steps_per_epoch is not None) and (steps_in_epoch >= max_steps_per_epoch):
-                    print(f"[Epoch {epoch_idx}] capped at {max_steps_per_epoch} steps")
-                    break  # kết thúc sớm epoch này
-
-            ############ Evaluation (sau mỗi epoch)
-            train_state.model.eval()
-            metrics = evaluate(config, train_state, eval_loader, eval_metadata, rank=RANK, world_size=WORLD_SIZE)
-            if RANK == 0 and metrics is not None:
-                wandb.log(metrics, step=train_state.step)
-
-            ############ Checkpointing (sau mỗi epoch)
-            if RANK == 0 and config.checkpoint_every_eval:
-                save_train_state(config, train_state)
-
-    # finalize
-    if dist.is_initialized():
-        dist.destroy_process_group()
-    wandb.finish()
-    # Training Loop
     # for _iter_id in range(total_iters):
-    #     print (f"[Rank {RANK}, World Size {WORLD_SIZE}]: Epoch {_iter_id * train_epochs_per_iter}")
+    #     for local_epoch in range(train_epochs_per_iter):
+    #         epoch_idx = _iter_id * train_epochs_per_iter + local_epoch
+    #         print(f"[Rank {RANK}, World Size {WORLD_SIZE}]: Epoch {epoch_idx}")
 
-    #     ############ Train Iter
-    #     train_state.model.train()
-    #     for set_name, batch, global_batch_size in train_loader:
-    #         metrics = train_batch(config, train_state, batch, global_batch_size, rank=RANK, world_size=WORLD_SIZE)
+    #         ############ Train Iter (1 epoch)
+    #         train_state.model.train()
+    #         # đếm step trong epoch
+    #         steps_in_epoch = 0
+    #         for set_name, batch, global_batch_size in train_loader:
+    #             metrics = train_batch(config, train_state, batch, global_batch_size, rank=RANK, world_size=WORLD_SIZE)
 
+    #             steps_in_epoch += 1
+    #             if RANK == 0 and metrics is not None:
+    #                 wandb.log(metrics, step=train_state.step)
+    #                 progress_bar.update(train_state.step - progress_bar.n)  # type: ignore
+    #                 if steps_in_epoch % 200 == 0:
+    #                     print(f"[Epoch {epoch_idx}] step {steps_in_epoch}")
+
+    #             # GIỚI HẠN SỐ BƯỚC MỖI EPOCH (tùy chọn)
+    #             if (max_steps_per_epoch is not None) and (steps_in_epoch >= max_steps_per_epoch):
+    #                 print(f"[Epoch {epoch_idx}] capped at {max_steps_per_epoch} steps")
+    #                 break  # kết thúc sớm epoch này
+
+    #         ############ Evaluation (sau mỗi epoch)
+    #         train_state.model.eval()
+    #         metrics = evaluate(config, train_state, eval_loader, eval_metadata, rank=RANK, world_size=WORLD_SIZE)
     #         if RANK == 0 and metrics is not None:
     #             wandb.log(metrics, step=train_state.step)
-    #             progress_bar.update(train_state.step - progress_bar.n)  # type: ignore
 
-    #     ############ Evaluation
-    #     train_state.model.eval()
-    #     metrics = evaluate(config, train_state, eval_loader, eval_metadata, rank=RANK, world_size=WORLD_SIZE)
-
-    #     if RANK == 0 and metrics is not None:
-    #         wandb.log(metrics, step=train_state.step)
-            
-    #     ############ Checkpointing
-    #     if RANK == 0 and (config.checkpoint_every_eval or (_iter_id == total_iters - 1)):
-    #         save_train_state(config, train_state)
+    #         ############ Checkpointing (sau mỗi epoch)
+    #         if RANK == 0 and config.checkpoint_every_eval:
+    #             save_train_state(config, train_state)
 
     # # finalize
     # if dist.is_initialized():
     #     dist.destroy_process_group()
     # wandb.finish()
+    # Training Loop
+    for _iter_id in range(total_iters):
+        print (f"[Rank {RANK}, World Size {WORLD_SIZE}]: Epoch {_iter_id * train_epochs_per_iter}")
+
+        ############ Train Iter
+        train_state.model.train()
+        for set_name, batch, global_batch_size in train_loader:
+            metrics = train_batch(config, train_state, batch, global_batch_size, rank=RANK, world_size=WORLD_SIZE)
+
+            if RANK == 0 and metrics is not None:
+                wandb.log(metrics, step=train_state.step)
+                progress_bar.update(train_state.step - progress_bar.n)  # type: ignore
+
+        ############ Evaluation
+        train_state.model.eval()
+        metrics = evaluate(config, train_state, eval_loader, eval_metadata, rank=RANK, world_size=WORLD_SIZE)
+
+        if RANK == 0 and metrics is not None:
+            wandb.log(metrics, step=train_state.step)
+            
+        ############ Checkpointing
+        if RANK == 0 and (config.checkpoint_every_eval or (_iter_id == total_iters - 1)):
+            save_train_state(config, train_state)
+
+    # finalize
+    if dist.is_initialized():
+        dist.destroy_process_group()
+    wandb.finish()
 
 
 if __name__ == "__main__":
