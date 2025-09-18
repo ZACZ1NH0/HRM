@@ -18,7 +18,7 @@ class HotpotQADatasetConfig:
     seq_len_q: int = 64       # Lq
     ctx_k: int = 4            # K passages
     ctx_len: int = 128        # Lc
-    retriever= Optional[object] = None
+    retriever: Optional[object] = None
     # misc
     seed: int = 0
     use_supporting_facts: bool = True  # True = dùng supporting_facts để lấy passages
@@ -62,12 +62,7 @@ class HotpotQADataset(Dataset):
             self.tok.pad_token = self.tok.eos_token if self.tok.eos_token else "[PAD]"
 
         # load dataset (chọn "distractor" để nhanh; "fullwiki" cũng được nếu bạn đã login)
-        self.ds = load_dataset("hotpot_qa", "distractor")[split]
-        retr = retriever()
-        cache_path = "artifacts/bm25_fullwiki.pkl"
-        docs = self.ds
-        retr.build(docs)
-        retr.save(cache_path)
+        self.ds = load_dataset("hotpot_qa", "fullwiki")[split]
         self.num_groups = math.ceil(len(self.ds) / cfg.global_batch_size)
 
         random.seed(cfg.seed)
