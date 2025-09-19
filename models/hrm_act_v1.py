@@ -135,9 +135,15 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
         self.H_level = HierarchicalReasoningModel_ACTV1ReasoningModule(layers=[HierarchicalReasoningModel_ACTV1Block(self.config) for _i in range(self.config.H_layers)])
         self.L_level = HierarchicalReasoningModel_ACTV1ReasoningModule(layers=[HierarchicalReasoningModel_ACTV1Block(self.config) for _i in range(self.config.L_layers)])
         
+        _H_init = trunc_normal_init_(torch.empty(1, 1, self.config.hidden_size, dtype=self.forward_dtype), std=1)
+        _L_init = trunc_normal_init_(torch.empty(1, 1, self.config.hidden_size, dtype=self.forward_dtype), std=1)
+
+        # Đăng ký buffer để .to(device) hoạt động
+        self.register_buffer("H_init", _H_init, persistent=True)
+        self.register_buffer("L_init", _L_init, persistent=True)
         # Initial states
-        self.H_init = nn.Buffer(trunc_normal_init_(torch.empty(self.config.hidden_size, dtype=self.forward_dtype), std=1), persistent=True)
-        self.L_init = nn.Buffer(trunc_normal_init_(torch.empty(self.config.hidden_size, dtype=self.forward_dtype), std=1), persistent=True)
+        # self.H_init = nn.Buffer(trunc_normal_init_(torch.empty(self.config.hidden_size, dtype=self.forward_dtype), std=1), persistent=True)
+        # self.L_init = nn.Buffer(trunc_normal_init_(torch.empty(self.config.hidden_size, dtype=self.forward_dtype), std=1), persistent=True)
 
         # Q head special init
         # Init Q to (almost) zero for faster learning during bootstrapping
@@ -167,18 +173,40 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
         return self.embed_scale * emb
 
 
+    # def empty_carry(self, batch_size: int):
+    #     return HierarchicalReasoningModel_ACTV1InnerCarry(
+    #         z_H=torch.empty(batch_size, self.total_len, self.config.hidden_size, dtype=self.forward_dtype),
+    #         z_L=torch.empty(batch_size, self.total_len, self.config.hidden_size, dtype=self.forward_dtype),
+    # )
     def empty_carry(self, batch_size: int):
+        total_len = self.config.seq_len_q + self.config.ctx_k * self.config.ctx_len
+        device = self.segment_embed.device  # bám theo tham số của model
+        dtype  = self.forward_dtype
         return HierarchicalReasoningModel_ACTV1InnerCarry(
-            z_H=torch.empty(batch_size, self.total_len, self.config.hidden_size, dtype=self.forward_dtype),
-            z_L=torch.empty(batch_size, self.total_len, self.config.hidden_size, dtype=self.forward_dtype),
-    )
-        
-    def reset_carry(self, reset_flag: torch.Tensor, carry: HierarchicalReasoningModel_ACTV1InnerCarry):
-        return HierarchicalReasoningModel_ACTV1InnerCarry(
-            z_H=torch.where(reset_flag.view(-1, 1, 1), self.H_init, carry.z_H),
-            z_L=torch.where(reset_flag.view(-1, 1, 1), self.L_init, carry.z_L),
+            z_H=torch.empty(batch_size, total_len, self.config.hidden_size, dtype=dtype, device=device),
+            z_L=torch.empty(batch_size, total_len, self.config.hidden_size, dtype=dtype, device=device),
         )
 
+
+        
+    # def reset_carry(self, reset_flag: torch.Tensor, carry: HierarchicalReasoningModel_ACTV1InnerCarry):
+    #     return HierarchicalReasoningModel_ACTV1InnerCarry(
+    #         z_H=torch.where(reset_flag.view(-1, 1, 1), self.H_init, carry.z_H),
+    #         z_L=torch.where(reset_flag.view(-1, 1, 1), self.L_init, carry.z_L),
+    #     )
+    def reset_carry(self, reset_flag: torch.Tensor, carry: HierarchicalReasoningModel_ACTV1InnerCarry):
+        # reset_flag: (B,)
+        B = reset_flag.shape[0]
+        # broadcast H_init/L_init từ (1,1,H) → (B, seq_len, H)
+        H_init = self.H_init.expand(B, carry.z_H.shape[1], -1)
+        L_init = self.L_init.expand(B, carry.z_L.shape[1], -1)
+
+        mask = reset_flag.view(-1, 1, 1)
+        return HierarchicalReasoningModel_ACTV1InnerCarry(
+            z_H=torch.where(mask, H_init, carry.z_H),
+            z_L=torch.where(mask, L_init, carry.z_L),
+        )
+    
     def forward(self, carry: HierarchicalReasoningModel_ACTV1InnerCarry, batch: Dict[str, torch.Tensor]) -> Tuple[HierarchicalReasoningModel_ACTV1InnerCarry, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         seq_info = dict(
             cos_sin=self.rotary_emb() if hasattr(self, "rotary_emb") else None,

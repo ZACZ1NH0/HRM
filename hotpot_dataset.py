@@ -133,7 +133,7 @@ class HotpotQADataset(Dataset):
 
             yield {
                 "inputs": torch.tensor(q_ids, dtype=torch.long),             # (Lq)
-                "puzzle_identifiers": torch.tensor(ctx_ids, dtype=torch.long),# (K, Lc)
+                "ctx_inputs": torch.tensor(ctx_ids, dtype=torch.long),# (K, Lc)
                 "labels": build_labels(q_ids, ctx_ids, ans_ids, self.tok.pad_token_id),
                 # … các field khác bạn đang dùng
             }
