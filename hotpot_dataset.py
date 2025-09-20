@@ -201,6 +201,21 @@ class HotpotQADataset(Dataset):
     # ===== Dataset API =====
     def __len__(self):
         return self.num_groups
+    def _retrieve_passages_via_retriever(self, question_text: str) -> List[str]:
+        """
+        Dùng retriever nếu có: trả về list[str] các đoạn top-K.
+        """
+        if self.cfg.retriever is None:
+            return []
+        try:
+            hits = self.cfg.retriever.search(question_text, k=self.cfg.ctx_k)  # [(doc_id, score)]
+            idxs = [i for i, _ in hits]
+            return self.cfg.retriever.get_passages(idxs)  # List[str]
+        except Exception:
+            return []
+
+
+
 
     def __getitem__(self, group_idx: int):
         B = self.cfg.global_batch_size
@@ -243,7 +258,7 @@ class HotpotQADataset(Dataset):
             passages = uniq_passages[: self.cfg.ctx_k]
             while len(passages) < self.cfg.ctx_k:
                 passages.append("")  # pad passage rỗng  
-                
+
             ctx_ids = [self._tokenize_fixed(p, self.cfg.ctx_len) for p in passages[: self.cfg.ctx_k]]
 
             # labels (generative): answer vào cuối chuỗi [CTX... + Q]
