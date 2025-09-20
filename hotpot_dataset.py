@@ -219,7 +219,8 @@ class HotpotQADataset(Dataset):
 
             # question ids (Lq)
             q_ids = self._tokenize_fixed(q, self.cfg.seq_len_q)
-
+            passages: List[str] = []
+            passages.extend(self._retrieve_passages_via_retriever(q))
             # passages (K x Lc)
             if self.cfg.use_supporting_facts:
                 passages = self._passages_from_supporting(ex)
@@ -229,6 +230,20 @@ class HotpotQADataset(Dataset):
                 passages = []
             while len(passages) < self.cfg.ctx_k:
                 passages.append("")
+
+
+            seen = set()
+            uniq_passages = []
+            for p in passages:
+                p = (p or "").strip()
+                if p and p not in seen:
+                    uniq_passages.append(p)
+                    seen.add(p)
+
+            passages = uniq_passages[: self.cfg.ctx_k]
+            while len(passages) < self.cfg.ctx_k:
+                passages.append("")  # pad passage rỗng  
+                
             ctx_ids = [self._tokenize_fixed(p, self.cfg.ctx_len) for p in passages[: self.cfg.ctx_k]]
 
             # labels (generative): answer vào cuối chuỗi [CTX... + Q]
