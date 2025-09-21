@@ -17,7 +17,8 @@ import hydra
 import pydantic
 from omegaconf import DictConfig
 from adam_atan2 import AdamATan2
-
+from transformers import AutoTokenizer
+import re, string
 from hotpot_dataset import HotpotQADataset, HotpotQADatasetConfig, HotpotQADatasetMetadata
 from utils.functions import load_model_class, get_model_source_path
 
@@ -99,7 +100,7 @@ def create_dataloader(config: PretrainConfig, split: str, rank: int, world_size:
         ctx_k=config.ctx_k,
         ctx_len=config.ctx_len,
         seed=config.seed,
-        use_supporting_facts=True,
+        use_supporting_facts=False,
         global_batch_size=config.global_batch_size,
         retriever=retr,
     )
@@ -259,71 +260,157 @@ def train_batch(config: PretrainConfig, train_state: TrainState, batch: Any, glo
             return reduced_metrics
 
 
-def evaluate(config: PretrainConfig, train_state: TrainState, eval_loader: torch.utils.data.DataLoader, eval_metadata: HotpotQADatasetMetadata, rank: int, world_size: int):
-    with torch.inference_mode():
-        set_ids = {k: idx for idx, k in enumerate(eval_metadata.sets)}
-        
-        all_preds = {}
+def _normalize_text(s: str) -> str:
+    def remove_articles(text): return re.sub(r"\b(a|an|the)\b", " ", text)
+    def white_space_fix(text): return " ".join(text.split())
+    def remove_punc(text): return "".join(ch for ch in text if ch not in set(string.punctuation))
+    return white_space_fix(remove_articles(remove_punc(s.lower())))
 
-        metric_keys = []
-        metric_values = None
-        metric_global_batch_size = [0 for _ in range(len(set_ids))]
-        
-        carry = None
-        for set_name, batch, global_batch_size in eval_loader:
-            # To device
-            batch = {k: v.cuda() for k, v in batch.items()}
-            with torch.device("cuda"):
-                carry = train_state.model.initial_carry(batch)  # type: ignore
+def _f1_score(pred: str, gold: str) -> float:
+    pred_toks = _normalize_text(pred).split()
+    gold_toks = _normalize_text(gold).split()
+    if len(pred_toks) == 0 or len(gold_toks) == 0:
+        return float(pred_toks == gold_toks)
+    common = set(pred_toks) & set(gold_toks)
+    num_same = sum(min(pred_toks.count(t), gold_toks.count(t)) for t in common)
+    if num_same == 0: return 0.0
+    precision = num_same / len(pred_toks)
+    recall    = num_same / len(gold_toks)
+    return 2 * precision * recall / (precision + recall)
 
-            # Forward
-            while True:
-                carry, _, metrics, preds, all_finish = train_state.model(carry=carry, batch=batch, return_keys=config.eval_save_outputs)
+def _exact_match(pred: str, gold: str) -> float:
+    return float(_normalize_text(pred) == _normalize_text(gold))
+
+def evaluate(config, train_state, eval_loader, eval_metadata, rank: int, world_size: int):
+    tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_name, use_fast=True)
+    stop_ids = {tokenizer.sep_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id}
+    answer_max_len = getattr(config, "answer_max_len", 32)   # hoặc để 32 mặc định
+
+    em_sum = 0.0
+    f1_sum = 0.0
+    n_examples = 0
+
+    with torch.no_grad():
+        for _set_name, batch, _gbs in eval_loader:
+            # === gọi model để lấy logits ===
+            # LƯU Ý: head (ACTLossHead) phải forward(..., return_keys=["logits"]) để có out_dict["logits"]
+            carry = train_state.model.model.initial_carry(batch)  # nếu bạn đã có carry trước đó thì dùng lại
+            carry, loss, metrics, out_dict, extras = train_state.model(
+                carry=carry,
+                batch=batch,
+                return_keys=["logits"]   # <-- quan trọng
+            )
+
+            logits = out_dict["logits"]              # (B, total_len, vocab)
+            labels = batch["labels"]                 # (B, total_len) với -100 ngoài vùng answer
+            B, total_len, _ = logits.shape
+
+            # === Lấy phần tail cho câu trả lời ===
+            tail_logits = logits[:, -answer_max_len:, :]         # (B, Lans, vocab)
+            pred_ids = tail_logits.argmax(-1).cpu().tolist()     # List[List[int]]
+
+            # === Decode prediction (dừng sớm ở SEP/EOS/PAD) ===
+            pred_texts = []
+            for ids in pred_ids:
+                toks = []
+                for t in ids:
+                    if t in stop_ids: break
+                    toks.append(t)
+                pred_texts.append(tokenizer.decode(toks, skip_special_tokens=True).strip())
+
+            # === Lấy gold text từ labels (bỏ -100) ===
+            gold_texts = []
+            for lab in labels.cpu().tolist():
+                ans_tok = [t for t in lab if t != -100]
+                gold_texts.append(tokenizer.decode(ans_tok, skip_special_tokens=True).strip())
+
+            # === Tính EM/F1 batch ===
+            for p, g in zip(pred_texts, gold_texts):
+                em_sum += _exact_match(p, g)
+                f1_sum += _f1_score(p, g)
+                n_examples += 1
+
+    # Trung bình
+    if n_examples > 0:
+        em_avg = em_sum / n_examples
+        f1_avg = f1_sum / n_examples
+    else:
+        em_avg = 0.0
+        f1_avg = 0.0
+
+    # gộp vào metrics để log W&B
+    metrics = {
+        "eval/em": em_avg,
+        "eval/f1": f1_avg,
+        # có thể thêm loss eval hiện có nếu bạn đã tính
+    }
+    return metrics
+
+# def evaluate(config: PretrainConfig, train_state: TrainState, eval_loader: torch.utils.data.DataLoader, eval_metadata: HotpotQADatasetMetadata, rank: int, world_size: int):
+#     with torch.inference_mode():
+#         set_ids = {k: idx for idx, k in enumerate(eval_metadata.sets)}
+        
+#         all_preds = {}
+
+#         metric_keys = []
+#         metric_values = None
+#         metric_global_batch_size = [0 for _ in range(len(set_ids))]
+        
+#         carry = None
+#         for set_name, batch, global_batch_size in eval_loader:
+#             # To device
+#             batch = {k: v.cuda() for k, v in batch.items()}
+#             with torch.device("cuda"):
+#                 carry = train_state.model.initial_carry(batch)  # type: ignore
+
+#             # Forward
+#             while True:
+#                 carry, _, metrics, preds, all_finish = train_state.model(carry=carry, batch=batch, return_keys=config.eval_save_outputs)
                 
-                if all_finish:
-                    break
+#                 if all_finish:
+#                     break
 
-            for collection in (batch, preds):
-                for k, v in collection.items():
-                    if k in config.eval_save_outputs:
-                        all_preds.setdefault(k, [])
-                        all_preds[k].append(v.cpu())  # Move to CPU for saving GPU memory
+#             for collection in (batch, preds):
+#                 for k, v in collection.items():
+#                     if k in config.eval_save_outputs:
+#                         all_preds.setdefault(k, [])
+#                         all_preds[k].append(v.cpu())  # Move to CPU for saving GPU memory
                         
-            del carry, preds, batch, all_finish
+#             del carry, preds, batch, all_finish
 
-            # Aggregate
-            set_id = set_ids[set_name]
+#             # Aggregate
+#             set_id = set_ids[set_name]
             
-            if metric_values is None:
-                metric_keys = list(sorted(metrics.keys()))  # Sort keys to guarantee all processes use the same order.
-                metric_values = torch.zeros((len(set_ids), len(metrics.values())), dtype=torch.float32, device="cuda")
+#             if metric_values is None:
+#                 metric_keys = list(sorted(metrics.keys()))  # Sort keys to guarantee all processes use the same order.
+#                 metric_values = torch.zeros((len(set_ids), len(metrics.values())), dtype=torch.float32, device="cuda")
                 
-            metric_values[set_id] += torch.stack([metrics[k] for k in metric_keys])
-            metric_global_batch_size[set_id] += global_batch_size
+#             metric_values[set_id] += torch.stack([metrics[k] for k in metric_keys])
+#             metric_global_batch_size[set_id] += global_batch_size
 
-        if len(all_preds) and config.checkpoint_path is not None:
-            all_preds = {k: torch.cat(v, dim=0) for k, v in all_preds.items()}
+#         if len(all_preds) and config.checkpoint_path is not None:
+#             all_preds = {k: torch.cat(v, dim=0) for k, v in all_preds.items()}
 
-            os.makedirs(config.checkpoint_path, exist_ok=True)
-            torch.save(all_preds, os.path.join(config.checkpoint_path, f"step_{train_state.step}_all_preds.{rank}"))
+#             os.makedirs(config.checkpoint_path, exist_ok=True)
+#             torch.save(all_preds, os.path.join(config.checkpoint_path, f"step_{train_state.step}_all_preds.{rank}"))
 
-        # Logging
-        # Reduce to rank 0
-        if metric_values is not None:
-            if world_size > 1:
-                dist.reduce(metric_values, dst=0)
+#         # Logging
+#         # Reduce to rank 0
+#         if metric_values is not None:
+#             if world_size > 1:
+#                 dist.reduce(metric_values, dst=0)
             
-            if rank == 0:
-                reduced_metrics = metric_values.cpu().numpy()
-                reduced_metrics = {set_name: {metric_name: reduced_metrics[set_id, metric_id] for metric_id, metric_name in enumerate(metric_keys)}
-                                   for set_id, set_name in enumerate(set_ids)}
+#             if rank == 0:
+#                 reduced_metrics = metric_values.cpu().numpy()
+#                 reduced_metrics = {set_name: {metric_name: reduced_metrics[set_id, metric_id] for metric_id, metric_name in enumerate(metric_keys)}
+#                                    for set_id, set_name in enumerate(set_ids)}
                 
-                # Postprocess
-                for set_name, metrics in reduced_metrics.items():
-                    count = metrics.pop("count")
-                    reduced_metrics[set_name] = {k: v / count for k, v in metrics.items()}
+#                 # Postprocess
+#                 for set_name, metrics in reduced_metrics.items():
+#                     count = metrics.pop("count")
+#                     reduced_metrics[set_name] = {k: v / count for k, v in metrics.items()}
 
-                return reduced_metrics
+#                 return reduced_metrics
 
 
 def save_code_and_config(config: PretrainConfig):
