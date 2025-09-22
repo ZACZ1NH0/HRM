@@ -234,7 +234,7 @@ class HotpotQADataset(Dataset):
 
             # question ids (Lq)
             q_ids = self._tokenize_fixed(q, self.cfg.seq_len_q)
-            # passages: List[str] = []
+            passages: List[str] = []
             passages.extend(self._retrieve_passages_via_retriever(q))
             # passages (K x Lc)
             # if self.cfg.use_supporting_facts:
