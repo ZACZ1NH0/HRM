@@ -294,6 +294,7 @@ def evaluate(config, train_state, eval_loader, eval_metadata, rank: int, world_s
         for _set_name, batch, _gbs in eval_loader:
             # === gọi model để lấy logits ===
             # LƯU Ý: head (ACTLossHead) phải forward(..., return_keys=["logits"]) để có out_dict["logits"]
+            batch = {k: v.cuda() for k, v in batch.items()}
             carry = train_state.model.model.initial_carry(batch)  # nếu bạn đã có carry trước đó thì dùng lại
             carry, loss, metrics, out_dict, extras = train_state.model(
                 carry=carry,

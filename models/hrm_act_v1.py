@@ -201,7 +201,7 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
         H_init = self.H_init.expand(B, carry.z_H.shape[1], -1)
         L_init = self.L_init.expand(B, carry.z_L.shape[1], -1)
 
-        mask = reset_flag.view(-1, 1, 1)
+        mask = reset_flag.view(-1, 1, 1).to(carry.z_H.device)
         return HierarchicalReasoningModel_ACTV1InnerCarry(
             z_H=torch.where(mask, H_init, carry.z_H),
             z_L=torch.where(mask, L_init, carry.z_L),
@@ -253,12 +253,12 @@ class HierarchicalReasoningModel_ACTV1(nn.Module):
 
     def initial_carry(self, batch: Dict[str, torch.Tensor]):
         batch_size = batch["inputs"].shape[0]
-
+        device = next(self.parameters()).device
         return HierarchicalReasoningModel_ACTV1Carry(
             inner_carry=self.inner.empty_carry(batch_size),  # Empty is expected, it will be reseted in first pass as all sequences are halted.
             
-            steps=torch.zeros((batch_size, ), dtype=torch.int32),
-            halted=torch.ones((batch_size, ), dtype=torch.bool),  # Default to halted
+            steps=torch.zeros((batch_size, ), dtype=torch.int32, device=device),
+            halted=torch.ones((batch_size, ), dtype=torch.bool, device=device),  # Default to halted
             
             current_data={k: torch.empty_like(v) for k, v in batch.items()}
         )

@@ -234,15 +234,19 @@ class HotpotQADataset(Dataset):
 
             # question ids (Lq)
             q_ids = self._tokenize_fixed(q, self.cfg.seq_len_q)
-            passages: List[str] = []
+            # passages: List[str] = []
             passages.extend(self._retrieve_passages_via_retriever(q))
             # passages (K x Lc)
+            # if self.cfg.use_supporting_facts:
+            #     passages = self._passages_from_supporting(ex)
+            # else:
+            #     passages = []
+            # if not passages:
+            #     passages = []
             if self.cfg.use_supporting_facts:
-                passages = self._passages_from_supporting(ex)
-            else:
-                passages = []
-            if not passages:
-                passages = []
+                sf_passages = self._passages_from_supporting(ex)
+                if sf_passages:  # ưu tiên SF khi có
+                    passages = sf_passages
             while len(passages) < self.cfg.ctx_k:
                 passages.append("")
 
