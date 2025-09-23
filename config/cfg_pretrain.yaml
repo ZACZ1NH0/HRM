@@ -10,7 +10,7 @@ beta2: 0.95
 
 # QA lengths + tokenizer
 seq_len_q: 64
-ctx_k: 2
+ctx_k: 6
 ctx_len: 160
 tokenizer_name: "bert-base-uncased"
 

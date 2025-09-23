@@ -100,7 +100,7 @@ def create_dataloader(config: PretrainConfig, split: str, rank: int, world_size:
         ctx_k=config.ctx_k,
         ctx_len=config.ctx_len,
         seed=config.seed,
-        use_supporting_facts=False,
+        use_supporting_facts=True,
         global_batch_size=config.global_batch_size,
         retriever=retr,
     )
@@ -170,8 +170,8 @@ def cosine_schedule_with_warmup_lr_lambda(
 
 def init_train_state(config: PretrainConfig, train_metadata: HotpotQADatasetMetadata, world_size: int):
     # ước lượng: mỗi step tiêu thụ ~ global_batch_size items
-    total_steps = int(config.epochs * train_metadata.total_groups / config.global_batch_size)
-
+    # total_steps = int(config.epochs * train_metadata.total_groups / config.global_batch_size)
+    total_steps = int(config.epochs * train_metadata.total_groups)
     model, optimizers, optimizer_lrs = create_model(config, train_metadata, world_size=world_size)
 
     return TrainState(

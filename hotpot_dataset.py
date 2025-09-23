@@ -70,7 +70,7 @@ class HotpotQADataset(Dataset):
         # metadata để trả về từ create_dataloader
         self.metadata = HotpotQADatasetMetadata(
             vocab_size=self.tok.vocab_size,
-            total_groups=len(self.ds),                # mỗi item là 1 "group"
+            total_groups=self.num_groups,                # mỗi item là 1 "group"
             mean_examples_per_group=1,                # đơn giản hóa
             sets=[split],
             seq_len_q=cfg.seq_len_q,
