@@ -100,7 +100,7 @@ def create_dataloader(config: PretrainConfig, split: str, rank: int, world_size:
         ctx_k=config.ctx_k,
         ctx_len=config.ctx_len,
         seed=config.seed,
-        use_supporting_facts=False,
+        use_supporting_facts=True,
         global_batch_size=config.global_batch_size,
         retriever=retr,
     )
@@ -220,13 +220,13 @@ def train_batch(config: PretrainConfig, train_state: TrainState, batch: Any, glo
     train_state.carry, loss, metrics, _, _ = train_state.model(carry=train_state.carry, batch=batch, return_keys=[])
 
     ((1 / global_batch_size) * loss).backward()
-
+    
     # Allreduce
     if world_size > 1:
         for param in train_state.model.parameters():
             if param.grad is not None:
                 dist.all_reduce(param.grad)
-            
+    torch.nn.utils.clip_grad_norm_(train_state.model.parameters(), 1.0)        
     # Apply optimizer
     lr_this_step = None    
     for optim, base_lr in zip(train_state.optimizers, train_state.optimizer_lrs):
@@ -283,7 +283,8 @@ def _exact_match(pred: str, gold: str) -> float:
 
 def evaluate(config, train_state, eval_loader, eval_metadata, rank: int, world_size: int):
     tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_name, use_fast=True)
-    stop_ids = {tokenizer.sep_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id}
+    # stop_ids = {tokenizer.sep_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id}
+    stop_ids = {i for i in [tokenizer.sep_token_id, tokenizer.eos_token_id, tokenizer.pad_token_id] if i is not None}
     answer_max_len = getattr(config, "answer_max_len", 32)   # hoặc để 32 mặc định
 
     em_sum = 0.0

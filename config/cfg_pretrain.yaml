@@ -10,8 +10,8 @@ beta2: 0.95
 
 # QA lengths + tokenizer
 seq_len_q: 64
-ctx_k: 4
-ctx_len: 128
+ctx_k: 2
+ctx_len: 160
 tokenizer_name: "bert-base-uncased"
 
 data_path: ""   # giữ chỗ

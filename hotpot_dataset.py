@@ -273,6 +273,11 @@ class HotpotQADataset(Dataset):
             start_pos = total_len - len(a_ids)
             labels[start_pos: start_pos + len(a_ids)] = a_ids
 
+            eos_id = self.tok.sep_token_id or self.tok.eos_token_id or self.tok.pad_token_id
+            end_pos = start_pos + len(a_ids)
+            if (eos_id is not None) and (end_pos < total_len):
+                labels[end_pos] = eos_id
+
             inputs_list.append(torch.tensor(q_ids, dtype=torch.long))        # (Lq,)
             ctx_list.append(torch.tensor(ctx_ids, dtype=torch.long))         # (K, Lc)
             labels_list.append(torch.tensor(labels, dtype=torch.long))       # (total_len,)

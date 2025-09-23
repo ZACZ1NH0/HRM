@@ -3,8 +3,8 @@ loss:
   name: losses@ACTLossHead
   loss_type: stablemax_cross_entropy
 
-halt_exploration_prob: 0.1
-halt_max_steps: 16
+halt_exploration_prob: 0.0
+halt_max_steps: 1
 
 H_cycles: 2
 L_cycles: 2
