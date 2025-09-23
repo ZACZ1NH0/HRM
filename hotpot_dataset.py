@@ -249,7 +249,7 @@ class HotpotQADataset(Dataset):
                     passages = sf_passages
             while len(passages) < self.cfg.ctx_k:
                 passages.append("")
-
+            
 
             seen = set()
             uniq_passages = []

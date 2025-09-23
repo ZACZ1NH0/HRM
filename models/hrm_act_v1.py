@@ -112,6 +112,8 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
 
         self.embed_tokens = CastedEmbedding(self.config.vocab_size, self.config.hidden_size, init_std=embed_init_std, cast_to=self.forward_dtype)
         self.lm_head      = CastedLinear(self.config.hidden_size, self.config.vocab_size, bias=False)
+        with torch.no_grad():
+            self.lm_head.weight = self.embed_tokens.embedding_weight
         self.q_head       = CastedLinear(self.config.hidden_size, 2, bias=True)
 
         self.segment_embed = nn.Parameter(torch.zeros(2, self.config.hidden_size, dtype=self.forward_dtype))
@@ -260,7 +262,7 @@ class HierarchicalReasoningModel_ACTV1(nn.Module):
             steps=torch.zeros((batch_size, ), dtype=torch.int32, device=device),
             halted=torch.ones((batch_size, ), dtype=torch.bool, device=device),  # Default to halted
             
-            current_data={k: torch.empty_like(v) for k, v in batch.items()}
+            current_data={k: torch.empty_like(v, device = device) for k, v in batch.items()}
         )
         
     def forward(self, carry: HierarchicalReasoningModel_ACTV1Carry, batch: Dict[str, torch.Tensor]) -> Tuple[HierarchicalReasoningModel_ACTV1Carry, Dict[str, torch.Tensor]]:
