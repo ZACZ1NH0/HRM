@@ -100,7 +100,7 @@ def create_dataloader(config: PretrainConfig, split: str, rank: int, world_size:
         ctx_k=config.ctx_k,
         ctx_len=config.ctx_len,
         seed=config.seed,
-        use_supporting_facts=True,
+        use_supporting_facts=False,
         global_batch_size=config.global_batch_size,
         retriever=retr,
     )
