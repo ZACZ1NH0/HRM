@@ -11,6 +11,11 @@ from models.common import trunc_normal_init_
 from models.layers import rms_norm, SwiGLU, Attention, RotaryEmbedding, CosSin, CastedEmbedding, CastedLinear
 from models.sparse_embedding import CastedSparseEmbedding
 
+from transformers import AutoTokenizer
+try:
+    from reader_baseline import QAPipeline  # file bạn đưa
+except Exception:
+    QAPipeline = None  # phòng trường hợp chưa có file
 
 @dataclass
 class HierarchicalReasoningModel_ACTV1InnerCarry:
@@ -55,6 +60,10 @@ class HierarchicalReasoningModel_ACTV1Config(BaseModel):
     halt_exploration_prob: float
 
     forward_dtype: str = "bfloat16"
+
+    tokenizer_name: Optional[str] = None
+    use_external_reader: bool = False
+    answer_max_len: int = 32
 
 
 class HierarchicalReasoningModel_ACTV1Block(nn.Module):
@@ -153,6 +162,15 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
             self.q_head.weight.zero_()
             self.q_head.bias.fill_(-5)  # type: ignore
 
+        self.reader = None
+        self._tok = None
+        if getattr(self.config, "use_external_reader", False):
+            assert self.config.tokenizer_name is not None, "tokenizer_name phải được set trong config khi dùng external reader"
+            self._tok = AutoTokenizer.from_pretrained(self.config.tokenizer_name, use_fast=True)
+            if QAPipeline is None:
+                raise RuntimeError("Không tìm thấy QAPipeline (reader_baseline.py). Hãy đặt file vào PYTHONPATH.")
+            self.reader = QAPipeline()
+
     def _input_embeddings(self, question_ids: torch.Tensor, ctx_ids: torch.Tensor):
         """
         question_ids: (B, Lq)
@@ -234,6 +252,49 @@ class HierarchicalReasoningModel_ACTV1_Inner(nn.Module):
         # 1-step grad
         z_L = self.L_level(z_L, z_H + input_embeddings, **seq_info)
         z_H = self.H_level(z_H, z_L, **seq_info)
+
+                # >>> THÊM: nếu dùng external reader và đang EVAL, thay lm_head bằng reader pretrained
+        if (self.reader is not None) and (not self.training):
+            B, total_len, V = z_H.shape[0], z_H.shape[1], self.config.vocab_size
+            device = z_H.device
+            # logits "giả lập": -inf ở mọi vị trí, riêng tail ghi one-hot theo answer tokens
+            output = torch.full((B, total_len, V), -1e9, dtype=torch.float32, device=device)
+
+            def _ids_to_text(ids_1d):
+                if isinstance(ids_1d, torch.Tensor):
+                    ids_1d = ids_1d.tolist()
+                return self._tok.decode(ids_1d, skip_special_tokens=True).strip()
+
+            # lấy question/context text từ batch ids
+            B_, K, Lc = batch["ctx_inputs"].shape
+            Lq = batch["inputs"].shape[1]
+            assert B_ == B
+
+            for i in range(B):
+                q_text = _ids_to_text(batch["inputs"][i])
+                ctx_texts = []
+                for k in range(K):
+                    ctx_texts.append(_ids_to_text(batch["ctx_inputs"][i, k]))
+                context = " ".join(ctx_texts)
+
+                # gọi reader pretrained
+                pred_text, _score = self.reader.answer(q_text, context, max_len=384)
+
+                # mã hóa lại thành token ids (không thêm special)
+                ans_ids = self._tok(pred_text, add_special_tokens=False)["input_ids"][: self.config.answer_max_len]
+                L = len(ans_ids)
+                if L > 0:
+                    start = total_len - L  # dán answer vào đuôi như labels đang làm
+                    for t, tid in enumerate(ans_ids):
+                        if 0 <= tid < V and 0 <= start + t < total_len:
+                            # đặt logit lớn để argmax ra đúng token pred
+                            output[i, start + t, tid] = 50.0
+
+            # q_head vẫn tính như cũ
+            q_logits = self.q_head(z_H[:, 0]).to(torch.float32)
+            new_carry = HierarchicalReasoningModel_ACTV1InnerCarry(z_H=z_H.detach(), z_L=z_L.detach())
+            return new_carry, output, (q_logits[..., 0], q_logits[..., 1])
+
 
         # LM Outputs
         new_carry = HierarchicalReasoningModel_ACTV1InnerCarry(z_H=z_H.detach(), z_L=z_L.detach())  # New carry no grad
